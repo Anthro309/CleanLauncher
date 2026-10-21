@@ -192,6 +192,22 @@ class Store(private val sp: SharedPreferences) {
         private set
 
     var showHidden by mutableStateOf(false)
+    var cinematicMode by mutableStateOf(sp.getBoolean("cinematic", true))
+        private set
+    fun toggleCinematic() {
+        cinematicMode = !cinematicMode
+        sp.edit().putBoolean("cinematic", cinematicMode).apply()
+    }
+    fun movePin(pkg: String, direction: Int) {
+        val index = pinned.indexOf(pkg)
+        val target = index + direction
+        if (index < 0 || target !in pinned.indices) return
+        val ordered = pinned.toMutableList()
+        val item = ordered.removeAt(index)
+        ordered.add(target, item)
+        pinned = ordered
+        sp.edit().putString("pinned", pinned.joinToString(",")).apply()
+    }
 
     fun togglePin(pkg: String) {
         pinned = if (pkg in pinned) pinned - pkg else pinned + pkg
@@ -473,7 +489,7 @@ class MainActivity : ComponentActivity() {
 // UI
 // ---------------------------------------------------------------------------
 
-private val Card = Color(0xFF161B28)
+private val Card = Color(0xCC161B28)
 private val Accent = Color(0xFF5B8CFF)
 private val TextDim = Color(0xFFB8C0D0)
 
@@ -518,6 +534,7 @@ fun LauncherScreen(
     actions: Actions
 ) {
     var menuFor by remember { mutableStateOf<AppEntry?>(null) }
+    var activeFeature by remember { mutableStateOf(0) }
 
     val visible = apps.filter { store.showHidden || it.pkg !in store.hidden }
     val favorites = store.pinned.mapNotNull { p -> visible.find { it.pkg == p } }
@@ -556,7 +573,9 @@ fun LauncherScreen(
                         fontSize = 16.sp
                     )
                 }
-                Pill("Background: ${theme.name}") { store.nextBackground() }
+                Pill(if (store.cinematicMode) "View: Cinematic" else "View: Compact") { store.toggleCinematic() }
+                Spacer(Modifier.width(10.dp))
+                Pill("Theme: ${theme.name}") { store.nextBackground() }
                 Spacer(Modifier.width(10.dp))
                 Pill(if (store.showAllApps) "Back to home" else "All apps") { store.toggleAllApps() }
                 Spacer(Modifier.width(10.dp))
@@ -597,7 +616,13 @@ fun LauncherScreen(
                         .weight(1f)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    SectionLabel("My apps")
+                    if (store.cinematicMode && movies.isNotEmpty()) {
+                        val featured = movies[activeFeature % movies.size]
+                        FeaturedHero(featured, onOpen = { actions.openMeta(featured) },
+                            onNext = { activeFeature = (activeFeature + 1) % movies.size })
+                        Spacer(Modifier.height(22.dp))
+                    }
+                    SectionLabel("YOUR APPS")
                     if (favorites.isEmpty()) {
                         Text(
                             "Nothing here yet. Open All apps and hold OK on an app to add it to home.",
@@ -650,11 +675,37 @@ fun LauncherScreen(
             pinned = app.pkg in store.pinned,
             hidden = app.pkg in store.hidden,
             onPin = { store.togglePin(app.pkg) },
+            onMoveLeft = { store.movePin(app.pkg, -1) },
+            onMoveRight = { store.movePin(app.pkg, 1) },
             onHide = { store.toggleHide(app.pkg) },
             onInfo = { actions.info(app.pkg) },
             onUninstall = { actions.uninstall(app.pkg) },
             onDismiss = { menuFor = null }
         )
+    }
+}
+
+@Composable
+fun FeaturedHero(meta: Meta, onOpen: () -> Unit, onNext: () -> Unit) {
+    val shape = RoundedCornerShape(24.dp)
+    Box(Modifier.fillMaxWidth().height(250.dp).clip(shape)
+        .background(Brush.horizontalGradient(listOf(Color(0xFF141B31), Color(0xFF283552), Color(0xFF111525))))) {
+        AsyncImage(model = meta.poster, contentDescription = null, contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize().alpha(0.34f))
+        Box(Modifier.fillMaxSize().background(
+            Brush.horizontalGradient(listOf(Color(0xF20B1122), Color(0xC0121831), Color(0x30111825)))))
+        Column(Modifier.align(Alignment.CenterStart).padding(start = 36.dp, end = 36.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("CLEANLAUNCHER  /  FEATURED MOVIE", color = Color(0xFF94B6FF),
+                fontSize = 13.sp, letterSpacing = 2.sp, fontWeight = FontWeight.SemiBold)
+            Text(meta.name, color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("Discover something worth watching", color = Color(0xFFE0E6F5), fontSize = 15.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Pill("Explore in Stremio") { onOpen() }
+                Pill("Next feature  ›") { onNext() }
+            }
+        }
     }
 }
 
@@ -807,6 +858,8 @@ fun AppMenu(
     pinned: Boolean,
     hidden: Boolean,
     onPin: () -> Unit,
+    onMoveLeft: () -> Unit,
+    onMoveRight: () -> Unit,
     onHide: () -> Unit,
     onInfo: () -> Unit,
     onUninstall: () -> Unit,
@@ -840,6 +893,10 @@ fun AppMenu(
                 if (pinned) "Remove from home" else "Add to home",
                 Modifier.focusRequester(first)
             ) { onPin(); onDismiss() }
+            if (pinned) {
+                MenuItem("Move left") { onMoveLeft(); onDismiss() }
+                MenuItem("Move right") { onMoveRight(); onDismiss() }
+            }
             MenuItem(if (hidden) "Unhide app" else "Hide app") { onHide(); onDismiss() }
             MenuItem("App info") { onInfo(); onDismiss() }
             MenuItem("Uninstall") { onUninstall(); onDismiss() }
