@@ -16,6 +16,16 @@ android {
         versionName = "3.0.0"
     }
 
+    // Fixed signing key so every build can be installed over the previous one.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
