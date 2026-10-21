@@ -20,6 +20,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -36,6 +37,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -98,7 +100,11 @@ data class Meta(
     val id: String,
     val name: String,
     val poster: String,
-    val type: String // "movie" or "series"
+    val type: String, // "movie" or "series"
+    val background: String = "",
+    val year: String = "",
+    val rating: String = "",
+    val description: String = ""
 )
 
 class Actions(
@@ -243,8 +249,12 @@ class Store(private val sp: SharedPreferences) {
                 apps.firstOrNull { it.label.contains(keyword, ignoreCase = true) ||
                     it.pkg.contains(keyword, ignoreCase = true) }
             }
-            val initial = (preferred + apps.filter { it.pkg !in hidden }).distinctBy { it.pkg }
-                .take(6).map { it.pkg }
+            // Only your five apps go on home. Fall back to other apps only if none are installed.
+            val initial = if (preferred.isNotEmpty()) {
+                preferred.distinctBy { it.pkg }.map { it.pkg }
+            } else {
+                apps.filter { it.pkg !in hidden }.take(6).map { it.pkg }
+            }
             if (pinned.isEmpty()) pinned = initial
             sp.edit().putString("pinned", pinned.joinToString(","))
                 .putBoolean("firstRunSeeded", true).apply()
@@ -320,7 +330,16 @@ object Cinemeta {
             val poster = o.optString("poster").replace("http://", "https://")
             val id = o.optString("id")
             if (poster.isBlank() || id.isBlank()) null
-            else Meta(id = id, name = o.optString("name"), poster = poster, type = type)
+            else Meta(
+                id = id,
+                name = o.optString("name"),
+                poster = poster,
+                type = type,
+                background = o.optString("background").replace("http://", "https://"),
+                year = o.optString("releaseInfo").ifBlank { o.optString("year") },
+                rating = o.optString("imdbRating"),
+                description = o.optString("description")
+            )
         }
     }.getOrDefault(emptyList())
 }
@@ -525,6 +544,20 @@ fun BackgroundLayer(theme: BgTheme) {
     }
 }
 
+/** Alternates movies and series that have landscape art, for the big featured banner. */
+private fun buildFeatured(movies: List<Meta>, series: List<Meta>): List<Meta> {
+    val m = movies.filter { it.background.isNotBlank() }
+    val s = series.filter { it.background.isNotBlank() }
+    val out = ArrayList<Meta>()
+    var i = 0
+    while (out.size < 10 && (i < m.size || i < s.size)) {
+        if (i < m.size) out.add(m[i])
+        if (i < s.size && out.size < 10) out.add(s[i])
+        i++
+    }
+    return out
+}
+
 @Composable
 fun LauncherScreen(
     apps: List<AppEntry>,
@@ -534,25 +567,97 @@ fun LauncherScreen(
     actions: Actions
 ) {
     var menuFor by remember { mutableStateOf<AppEntry?>(null) }
+    var showOptions by remember { mutableStateOf(false) }
     var activeFeature by remember { mutableStateOf(0) }
+    val scroll = rememberScrollState()
+    val firstApp = remember { FocusRequester() }
 
     val visible = apps.filter { store.showHidden || it.pkg !in store.hidden }
     val favorites = store.pinned.mapNotNull { p -> visible.find { it.pkg == p } }
     val theme = Backgrounds[store.bgIndex % Backgrounds.size]
 
-    Box(Modifier.fillMaxSize()) {
+    val featured = remember(movies, series) { buildFeatured(movies, series) }
+    val hero = if (store.cinematicMode && featured.isNotEmpty()) {
+        featured[activeFeature % featured.size]
+    } else null
+
+    // The featured banner rotates by itself every 12 seconds; pressing Next restarts the timer.
+    LaunchedEffect(featured.size, activeFeature, store.cinematicMode) {
+        if (store.cinematicMode && featured.size > 1) {
+            delay(12_000)
+            activeFeature = (activeFeature + 1) % featured.size
+        }
+    }
+
+    // Start with focus on the first app so the remote works immediately.
+    LaunchedEffect(favorites.isNotEmpty(), store.showAllApps) {
+        if (favorites.isNotEmpty() && !store.showAllApps) {
+            delay(200)
+            runCatching { firstApp.requestFocus() }
+        }
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val screenH = maxHeight
+
         Crossfade(
             targetState = store.bgIndex % Backgrounds.size,
             animationSpec = tween(700),
             label = "background"
         ) { i -> BackgroundLayer(Backgrounds[i]) }
 
+        // Full-width cinematic backdrop that fades out as you scroll down.
+        if (hero != null && !store.showAllApps) {
+            val scrim = theme.base.last()
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .fillMaxWidth(0.74f)
+                    .height(screenH * 0.8f)
+                    .alpha((1f - scroll.value / 450f).coerceIn(0f, 1f))
+            ) {
+                Crossfade(
+                    targetState = hero,
+                    animationSpec = tween(900),
+                    label = "backdrop"
+                ) { m ->
+                    AsyncImage(
+                        model = m.background,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.horizontalGradient(
+                                0f to scrim,
+                                0.5f to scrim.copy(alpha = 0.45f),
+                                1f to Color.Transparent
+                            )
+                        )
+                )
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                0.5f to Color.Transparent,
+                                1f to scrim
+                            )
+                        )
+                )
+            }
+        }
+
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(horizontal = 48.dp, vertical = 28.dp)
         ) {
-            // Top bar: clock on the left, buttons on the right
+            // Top bar: clock on the left, two buttons on the right
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     val now by produceState(Date()) {
@@ -564,29 +669,25 @@ fun LauncherScreen(
                     Text(
                         DateFormat.getTimeInstance(DateFormat.SHORT).format(now),
                         color = Color.White,
-                        fontSize = 44.sp,
-                        fontWeight = FontWeight.Light
+                        fontSize = 40.sp,
+                        fontWeight = FontWeight.Light,
+                        maxLines = 1,
+                        softWrap = false
                     )
                     Text(
                         SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(now),
                         color = TextDim,
-                        fontSize = 16.sp
+                        fontSize = 15.sp,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
-                Pill(if (store.cinematicMode) "View: Cinematic" else "View: Compact") { store.toggleCinematic() }
-                Spacer(Modifier.width(10.dp))
-                Pill("Theme: ${theme.name}") { store.nextBackground() }
-                Spacer(Modifier.width(10.dp))
                 Pill(if (store.showAllApps) "Back to home" else "All apps") { store.toggleAllApps() }
                 Spacer(Modifier.width(10.dp))
-                Pill(if (store.showHidden) "Hide hidden apps" else "Show hidden apps") {
-                    store.showHidden = !store.showHidden
-                }
-                Spacer(Modifier.width(10.dp))
-                Pill("Settings") { actions.settings() }
+                Pill("Options") { showOptions = true }
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
 
             if (store.showAllApps) {
                 SectionLabel("All apps  (hold OK on an app to add it to home)")
@@ -614,14 +715,24 @@ fun LauncherScreen(
                     Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .verticalScroll(rememberScrollState())
+                        .verticalScroll(scroll)
                 ) {
-                    if (store.cinematicMode && movies.isNotEmpty()) {
-                        val featured = movies[activeFeature % movies.size]
-                        FeaturedHero(featured, onOpen = { actions.openMeta(featured) },
-                            onNext = { activeFeature = (activeFeature + 1) % movies.size })
-                        Spacer(Modifier.height(22.dp))
+                    // Featured title sits above your apps so both fit on the first screen.
+                    if (hero != null) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(maxOf(screenH - 300.dp, 220.dp))
+                        ) {
+                            HeroText(
+                                meta = hero,
+                                modifier = Modifier.align(Alignment.BottomStart),
+                                onOpen = { actions.openMeta(hero) },
+                                onNext = { activeFeature = (activeFeature + 1) % featured.size }
+                            )
+                        }
                     }
+
                     SectionLabel("YOUR APPS")
                     if (favorites.isEmpty()) {
                         Text(
@@ -632,14 +743,19 @@ fun LauncherScreen(
                         )
                     } else {
                         LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
                             contentPadding = PaddingValues(vertical = 12.dp, horizontal = 8.dp)
                         ) {
-                            items(favorites, key = { it.pkg }) { app ->
+                            itemsIndexed(favorites, key = { _, a -> a.pkg }) { index, app ->
                                 AppTile(
                                     app = app,
                                     dim = app.pkg in store.hidden,
-                                    modifier = Modifier.width(200.dp),
+                                    modifier = Modifier
+                                        .width(156.dp)
+                                        .then(
+                                            if (index == 0) Modifier.focusRequester(firstApp)
+                                            else Modifier
+                                        ),
                                     onClick = { actions.launch(app.pkg) },
                                     onMenu = { menuFor = app }
                                 )
@@ -669,6 +785,14 @@ fun LauncherScreen(
         }
     }
 
+    if (showOptions) {
+        OptionsMenu(
+            store = store,
+            onSettings = { actions.settings() },
+            onDismiss = { showOptions = false }
+        )
+    }
+
     menuFor?.let { app ->
         AppMenu(
             app = app,
@@ -686,25 +810,88 @@ fun LauncherScreen(
 }
 
 @Composable
-fun FeaturedHero(meta: Meta, onOpen: () -> Unit, onNext: () -> Unit) {
-    val shape = RoundedCornerShape(24.dp)
-    Box(Modifier.fillMaxWidth().height(250.dp).clip(shape)
-        .background(Brush.horizontalGradient(listOf(Color(0xFF141B31), Color(0xFF283552), Color(0xFF111525))))) {
-        AsyncImage(model = meta.poster, contentDescription = null, contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize().alpha(0.34f))
-        Box(Modifier.fillMaxSize().background(
-            Brush.horizontalGradient(listOf(Color(0xF20B1122), Color(0xC0121831), Color(0x30111825)))))
-        Column(Modifier.align(Alignment.CenterStart).padding(start = 36.dp, end = 36.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("CLEANLAUNCHER  /  FEATURED MOVIE", color = Color(0xFF94B6FF),
-                fontSize = 13.sp, letterSpacing = 2.sp, fontWeight = FontWeight.SemiBold)
-            Text(meta.name, color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold,
-                maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text("Discover something worth watching", color = Color(0xFFE0E6F5), fontSize = 15.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Pill("Explore in Stremio") { onOpen() }
-                Pill("Next feature  ›") { onNext() }
+fun HeroText(meta: Meta, modifier: Modifier, onOpen: () -> Unit, onNext: () -> Unit) {
+    val details = listOfNotNull(
+        meta.year.takeIf { it.isNotBlank() },
+        meta.rating.takeIf { it.isNotBlank() }?.let { "★ $it" }
+    ).joinToString("   ·   ")
+
+    Column(
+        modifier
+            .fillMaxWidth(0.58f)
+            .padding(start = 8.dp, bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            if (meta.type == "movie") "FEATURED MOVIE" else "FEATURED SERIES",
+            color = Color(0xFF94B6FF),
+            fontSize = 12.sp,
+            letterSpacing = 2.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            meta.name,
+            color = Color.White,
+            fontSize = 34.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (details.isNotEmpty()) {
+            Text(details, color = TextDim, fontSize = 14.sp)
+        }
+        if (meta.description.isNotBlank()) {
+            Text(
+                meta.description,
+                color = Color(0xFFE0E6F5),
+                fontSize = 14.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Pill("Explore in Stremio") { onOpen() }
+            Pill("Next  ›") { onNext() }
+        }
+    }
+}
+
+@Composable
+fun OptionsMenu(store: Store, onSettings: () -> Unit, onDismiss: () -> Unit) {
+    val first = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(60)
+        runCatching { first.requestFocus() }
+    }
+    val theme = Backgrounds[store.bgIndex % Backgrounds.size]
+
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .width(380.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xFF1B2133))
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "Options",
+                color = Color.White,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.height(4.dp))
+            MenuItem(
+                if (store.cinematicMode) "View: Cinematic" else "View: Compact",
+                Modifier.focusRequester(first)
+            ) { store.toggleCinematic() }
+            MenuItem("Theme: ${theme.name}") { store.nextBackground() }
+            MenuItem(if (store.showHidden) "Hide hidden apps" else "Show hidden apps") {
+                store.showHidden = !store.showHidden
             }
+            MenuItem("System settings") { onSettings(); onDismiss() }
+            MenuItem("Close") { onDismiss() }
         }
     }
 }

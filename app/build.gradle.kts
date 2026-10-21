@@ -12,8 +12,8 @@ android {
         applicationId = "com.cleanlauncher.tv"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "3.0.0"
+        versionCode = 5
+        versionName = "3.1.0"
     }
 
     // Fixed signing key so every build can be installed over the previous one.
